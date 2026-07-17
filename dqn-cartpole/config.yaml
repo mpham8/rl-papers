@@ -1,0 +1,26 @@
+#training params
+TOTAL_ITERS: 2000
+LOG_EVERY: 10
+SAVE_EVERY: 500
+SAVE_PATH: checkpoints/cartpole_dqn.pt
+
+# env params
+#TOTAL_AGENTS: 65536
+TOTAL_AGENTS: 1024
+HISTORY: 100000
+FRAME_STACK: 1
+MINIBATCH: 64
+UPDATE_EVERY: 1
+TARGET_SYNC_EVERY: 150
+
+#model params
+HIDDEN_SIZE: 64
+
+#optimization hyperparams
+LR: 0.001
+GAMMA: 0.99
+
+#exploration params
+EPS_START: 1.0
+EPS_END: 0.05
+EPS_DECAY_ITERS: 500
