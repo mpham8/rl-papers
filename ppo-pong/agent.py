@@ -3,12 +3,18 @@ import torch.nn.functional
 
 
 def select_action():
-    '''forward pass, eps-greedy action for each parallel env.'''
+    '''forward pass, select from stochastic policy for each parallel env.'''
+
+    return
+
+
+def compute_advantage_gae():
+    '''generalized advantage estimates'''
 
     return
 
 
 def train_step():
-    '''one qnet update on sampled replay minibatch'''
+    '''optimize surrogate wrt theta using minibatch'''
 
     return 
