@@ -1,6 +1,6 @@
 # rl-papers
 
-Implementating some RL papers I read. I use [PufferLib 4.0](https://github.com/PufferAI/PufferLib) for environment sim — their native Ocean envs are so insanely fast (w/ 50k parallel agents 30M+ sps on Cartpole). 
+Implementating some RL papers I read. I use [PufferLib 4.0](https://github.com/PufferAI/PufferLib) for environment sim - their native Ocean envs are so insanely fast (w/ 50k parallel agents 30M+ sps on Cartpole). 
 
 PufferLib 4.0 deprecated a lot of the Python and Gymnasium features in favor of faster C implementation, but I like fast iteration with Python and Torch (understandably trading off slower perf than native PufferLib C), so in each project I wrap PufferLib's `pufferlib._C`, the PyBind11 bindings for the native C/CUDA vector env, in a small `env.py` file with familiar Gymnasium env syntax and zero-copy views of the GPU for nn modelling with Torch.
 

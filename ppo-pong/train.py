@@ -40,7 +40,7 @@ def train(config=None):
         terminals_T = torch.zeros(cfg['HORIZON'], cfg['TOTAL_AGENTS']).cuda()
         log_prob_T = torch.zeros(cfg['HORIZON'], cfg['TOTAL_AGENTS']).cuda()
         values_T = torch.zeros(cfg['HORIZON'] + 1, cfg['TOTAL_AGENTS']).cuda()
-        gae = torch.zeros(cfg['TOTAL_AGENTS']).cuda()
+        gae = torch.zeros(cfg['HORIZON'], cfg['TOTAL_AGENTS']).cuda()
 
 
 
@@ -57,12 +57,7 @@ def train(config=None):
             states_T[t, :, :] = states_t
             log_prob_T[t, :] = log_prob
             values_T[t, :] = values_t.squeeze(-1)
-
-
-            states_t_next, rewards_t, terminals_t = env.step(policy_actions)
-
-            rewards_T[t, :] = rewards_t
-            terminals_T[t, :] = terminals_t
+            states_t, rewards_T[t], terminals_T[t] = env.step(policy_actions)
 
 
             # print("policy_actions size:", policy_actions.size())
@@ -73,11 +68,11 @@ def train(config=None):
             # print("rewards_T size:", rewards_T.size())
             # print("terminals_T size:", terminals_T.size())
             # print("log_prob_T size:", log_prob_T.size())
-            break
 
         with torch.no_grad():
             _, bootstrap_values = L_nn(states_t)
-        values_T[cfg['HORIZON'], :] = bootstrap_values
+        values_T[cfg['HORIZON'], :] = bootstrap_values.squeeze(-1)
+   
 
 
        
@@ -87,8 +82,8 @@ def train(config=None):
         compiled_compute_advantage_gae()
 
         running_gae = torch.zeros(cfg['TOTAL_AGENTS']).cuda()
-        for t in range(cfg['HORIZON'], -1, -1):
-            delta = values_T[t, :] - rewards_T[t, :] - cfg['GAMMA'] * values_T[t + 1, :] * (1 - terminals_T[t, :])
+        for t in range(cfg['HORIZON'] - 1, -1, -1):
+            delta = rewards_T[t, :] + cfg['GAMMA'] * values_T[t + 1, :] * (1 - terminals_T[t, :]) - values_T[t, :]
             running_gae = delta + cfg['GAMMA'] * cfg['LAMBDA'] * running_gae * (1 - terminals_T[t, :])
             gae[t] = running_gae
 
@@ -102,6 +97,9 @@ def train(config=None):
             n_idx = minibatch_idx % cfg['MINIBATCH'] #idx 1
             loss = compiled_train_step()
 
+            update += 1
+        global_step += NT
+
         #logging
         if update % cfg['LOG_EVERY'] == 0:
             logs = env.log()
@@ -109,7 +107,7 @@ def train(config=None):
             n_eps = logs.get('n', 0)
             sps = global_step / (time.time() - start)
             print(f'iter={iter:5d}  steps={global_step:10d}  eps={epsilon:.3f}  '
-                f'loss={loss.item():.3f}  replay={replay.size}/{cfg['HISTORY']}  '
+                f'loss={loss.item():.3f}'
                 f'episodes={n_eps:.0f}  score={score:.1f}  sps={sps:.0f}')
 
         #saving
@@ -120,11 +118,16 @@ def train(config=None):
             if save_dir:
                 os.makedirs(save_dir, exist_ok=True)
             ckpt_path = os.path.join(save_dir, f'{save_stem}_iter{iter:05d}.pt') if save_dir else f'{save_stem}_iter{iter:05d}.pt'
-            torch.save(qnet.state_dict(), ckpt_path)
+            torch.save(L_nn.state_dict(), ckpt_path)
             print(f'saved checkpoint to {ckpt_path}')
 
+        break
+    
     total_time = time.time() - start
     print(f'total training time: {total_time:.2f} seconds')
-    torch.save(qnet.state_dict(), cfg['SAVE_PATH'])
+    save_dir = os.path.dirname(cfg['SAVE_PATH'])
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+    torch.save(L_nn.state_dict(), cfg['SAVE_PATH'])
     print(f'saved checkpoint to {cfg["SAVE_PATH"]}')
     env.close()
