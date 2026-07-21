@@ -1,9 +1,9 @@
 #training params
 TOTAL_ITERS: 10000000
-HORIZON = 128
+HORIZON: 128
 LOG_EVERY: 10
 SAVE_EVERY: 500
-SAVE_PATH: checkpoints/cartpole_dqn.pt
+SAVE_PATH: checkpoints/pong_ppo.pt
 
 # env params
 #TOTAL_AGENTS: 65536

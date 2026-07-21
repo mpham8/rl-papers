@@ -12,9 +12,13 @@ PufferLib 4.0 deprecated a lot of the Python and Gymnasium features in favor of 
 | [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347) (Schulman et al., 2017) | PPO | [`ppo-pong/`](ppo-pong/) |
 
 
+## Running
 
-To run it, just go into respective folder and run:
-
+After installing PufferLib, build the Ocean env for your project from the PufferLib repo root with:
+```bash
+./build.sh [ocean environment] --float
+```
+navigate to the corresponding folder in this repo for the project then run:
 ```bash
 python3 run.py
 ```
