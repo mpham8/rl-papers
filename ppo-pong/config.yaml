@@ -1,5 +1,5 @@
 #training params
-TOTAL_ITERS: 10000000
+TOTAL_ITERS: 320000000
 LOG_EVERY: 10
 SAVE_EVERY: 500
 SAVE_PATH: checkpoints/pong_ppo.pt
@@ -10,7 +10,7 @@ TOTAL_AGENTS: 256
 #ppo rollout and update
 HORIZON: 128
 EPOCHS: 3
-MINIBATCH: 256
+MINIBATCH: 8192
 
 #ppo params
 EPS_ALPHA: 0.1
