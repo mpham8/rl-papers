@@ -5,9 +5,7 @@ from pathlib import Path
 import torch
 import yaml
 
-from torch.distributions import Categorical
-
-from agent import select_action, train_step, compute_advantage_gae
+from agent import select_action, train_step, compute_return_advantage
 from env import PufferEnv
 from model import L_clip_vf_s
 
@@ -22,7 +20,7 @@ def train(config=None):
     #torch optimized
     compiled_select_action = torch.compile(select_action)
     compiled_train_step = torch.compile(train_step)
-    compiled_compute_advantage_gae = torch.compile(compute_advantage_gae)
+    compiled_compute_return_advantage = torch.compile(compute_return_advantage)
     
     num_states = env.obs_size
     num_actions = env.num_actions    
@@ -31,6 +29,7 @@ def train(config=None):
     update = 0
 
     L_nn = L_clip_vf_s(num_states, num_actions, cfg['HIDDEN_SIZE']).cuda()
+    optimizer = torch.optim.Adam(L_nn.parameters(), lr = 1e-3) #TODO: change so lr decreases over time
 
     start = time.time()
     states_t = env.reset()
@@ -40,62 +39,40 @@ def train(config=None):
         terminals_T = torch.zeros(cfg['HORIZON'], cfg['TOTAL_AGENTS']).cuda()
         log_prob_T = torch.zeros(cfg['HORIZON'], cfg['TOTAL_AGENTS']).cuda()
         values_T = torch.zeros(cfg['HORIZON'] + 1, cfg['TOTAL_AGENTS']).cuda()
-        gae = torch.zeros(cfg['HORIZON'], cfg['TOTAL_AGENTS']).cuda()
+        actions_T = torch.zeros(cfg['HORIZON'], cfg['TOTAL_AGENTS'], dtype=torch.long).cuda()
 
 
-
-        for t in range(cfg['HORIZON']):
-
-            #run policy thru T steps
-            compiled_select_action()
-
-            policy_logits, values_t = L_nn(states_t)
-            dist = Categorical(logits = policy_logits)
-            policy_actions = dist.sample()
-            log_prob = dist.log_prob(policy_actions)
-            
-            states_T[t, :, :] = states_t
-            log_prob_T[t, :] = log_prob
-            values_T[t, :] = values_t.squeeze(-1)
-            states_t, rewards_T[t], terminals_T[t] = env.step(policy_actions)
-
-
-            # print("policy_actions size:", policy_actions.size())
-            # print("rewards size:", rewards_t.size())
-            # print("rewards device:", rewards_t.device)
-
-            # print("states_T_next size:", states_T.size())
-            # print("rewards_T size:", rewards_T.size())
-            # print("terminals_T size:", terminals_T.size())
-            # print("log_prob_T size:", log_prob_T.size())
-
+        # ==== run policy pi_old for T timesteps ====
         with torch.no_grad():
+            for t in range(cfg['HORIZON']):
+                #select action
+                actions, log_prob, values_t = compiled_select_action(L_nn, states_t)
+                
+                #store transitions
+                states_T[t, :, :] = states_t
+                actions_T[t, :] = actions
+                log_prob_T[t, :] = log_prob
+                values_T[t, :] = values_t.squeeze(-1)
+                
+                #step through, observe reward
+                states_t, rewards_T[t], terminals_T[t] = env.step(actions)
+
+            #bootstrap T+1 value
             _, bootstrap_values = L_nn(states_t)
-        values_T[cfg['HORIZON'], :] = bootstrap_values.squeeze(-1)
-   
+            values_T[cfg['HORIZON'], :] = bootstrap_values.squeeze(-1)
+    
 
+        # ==== compute advantage estimates and value targets====
+        gae, values_target = compiled_compute_return_advantage(rewards_T, values_T, terminals_T, cfg)
 
-       
-            
-
-        #compute advantage estimate
-        compiled_compute_advantage_gae()
-
-        running_gae = torch.zeros(cfg['TOTAL_AGENTS']).cuda()
-        for t in range(cfg['HORIZON'] - 1, -1, -1):
-            delta = rewards_T[t, :] + cfg['GAMMA'] * values_T[t + 1, :] * (1 - terminals_T[t, :]) - values_T[t, :]
-            running_gae = delta + cfg['GAMMA'] * cfg['LAMBDA'] * running_gae * (1 - terminals_T[t, :])
-            gae[t] = running_gae
-
-
-        #optimize surrogate L wrt theta, minibatches until K * N * T samples used
+        # ==== optimize surrogate L wrt theta, minibatches until K * N * T samples used ====
         NT = cfg['TOTAL_AGENTS'] * cfg['HORIZON']
         for i in range(0, cfg['EPOCHS'] * NT, cfg['MINIBATCH']):
             #sample mini batch
-            minibatch_idx = torch.randperm(NT)[:cfg['MINIBATCH']]
-            t_idx = minibatch_idx // cfg['MINIBATCH'] #idx 0 
-            n_idx = minibatch_idx % cfg['MINIBATCH'] #idx 1
-            loss = compiled_train_step()
+            minibatch_idx = torch.randperm(NT, device='cuda')[:cfg['MINIBATCH']]
+            t_idx = minibatch_idx // cfg['TOTAL_AGENTS']
+            n_idx = minibatch_idx % cfg['TOTAL_AGENTS']
+            loss = compiled_train_step(L_nn, optimizer, states_T, actions_T, t_idx, n_idx, gae, values_target, log_prob_T, cfg)
 
             update += 1
         global_step += NT
@@ -106,22 +83,21 @@ def train(config=None):
             score = logs.get('score', float('nan'))
             n_eps = logs.get('n', 0)
             sps = global_step / (time.time() - start)
-            print(f'iter={iter:5d}  steps={global_step:10d}  eps={epsilon:.3f}  '
-                f'loss={loss.item():.3f}'
-                f'episodes={n_eps:.0f}  score={score:.1f}  sps={sps:.0f}')
+            print(f'update={update:5d}  steps={global_step:10d}  '
+                  f'loss={loss.item():.3f}  '
+                  f'episodes={n_eps:.0f}  score={score:.1f}  sps={sps:.0f}')
 
-        #saving
+        #saving model weights
         if update % cfg['SAVE_EVERY'] == 0:
             save_path = cfg['SAVE_PATH']
             save_dir = os.path.dirname(save_path)
             save_stem, _ = os.path.splitext(os.path.basename(save_path))
             if save_dir:
                 os.makedirs(save_dir, exist_ok=True)
-            ckpt_path = os.path.join(save_dir, f'{save_stem}_iter{iter:05d}.pt') if save_dir else f'{save_stem}_iter{iter:05d}.pt'
+            ckpt_path = os.path.join(save_dir, f'{save_stem}_update{update:05d}.pt') if save_dir else f'{save_stem}_update{update:05d}.pt'
             torch.save(L_nn.state_dict(), ckpt_path)
             print(f'saved checkpoint to {ckpt_path}')
 
-        break
     
     total_time = time.time() - start
     print(f'total training time: {total_time:.2f} seconds')
