@@ -29,7 +29,7 @@ def train(config=None):
     update = 0
 
     L_nn = L_clip_vf_s(num_states, num_actions, cfg['HIDDEN_SIZE']).cuda()
-    optimizer = torch.optim.Adam(L_nn.parameters(), lr = 1e-3) #TODO: change so lr decreases over time
+    optimizer = torch.optim.Adam(L_nn.parameters(), lr=cfg['ADAM_ALPHA'])
 
     start = time.time()
     states_t = env.reset()
@@ -67,12 +67,16 @@ def train(config=None):
 
         # ==== optimize surrogate L wrt theta, minibatches until K * N * T samples used ====
         NT = cfg['TOTAL_AGENTS'] * cfg['HORIZON']
+        alpha = cfg['ALPHA'] + (cfg['ALPHA_END'] - cfg['ALPHA']) * min(global_step / cfg['TOTAL_ITERS'], 1.0) #linear annealing alpha 1->0
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = cfg['ADAM_ALPHA'] * alpha
+        clip_eps = cfg['EPS_ALPHA'] * alpha
         for i in range(0, cfg['EPOCHS'] * NT, cfg['MINIBATCH']):
             #sample mini batch
             minibatch_idx = torch.randperm(NT, device='cuda')[:cfg['MINIBATCH']]
             t_idx = minibatch_idx // cfg['TOTAL_AGENTS']
             n_idx = minibatch_idx % cfg['TOTAL_AGENTS']
-            loss = compiled_train_step(L_nn, optimizer, states_T, actions_T, t_idx, n_idx, gae, values_target, log_prob_T, cfg)
+            loss = compiled_train_step(L_nn, optimizer, states_T, actions_T, t_idx, n_idx, gae, values_target, log_prob_T, cfg, clip_eps)
 
             update += 1
         global_step += NT

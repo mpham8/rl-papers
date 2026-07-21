@@ -1,34 +1,30 @@
 #training params
 TOTAL_ITERS: 10000000
-HORIZON: 128
 LOG_EVERY: 10
 SAVE_EVERY: 500
 SAVE_PATH: checkpoints/pong_ppo.pt
 
 # env params
-#TOTAL_AGENTS: 65536
-TOTAL_AGENTS: 8
+TOTAL_AGENTS: 256
+
+#ppo rollout and update
+HORIZON: 128
 EPOCHS: 3
 MINIBATCH: 256
-UPDATE_EVERY: 1
-TARGET_SYNC_EVERY: 150
-
-#model params
-HIDDEN_SIZE: 64
-
-#optimization hyperparams
-LAMBDA: 0.95
-GAMMA: 0.99
-ALPHA: 0.05
-ADAM_ALPHA: 0.00025
 
 #ppo params
 EPS_ALPHA: 0.1
 C1: 1
 C2: 0.01
 
+#model params
+HIDDEN_SIZE: 64
 
-#exploration params
-EPS_START: 1.0
-EPS_END: 0.05
-EPS_DECAY_ITERS: 500
+#gae
+LAMBDA: 0.95
+GAMMA: 0.99
+
+#optimization hyperparams
+ALPHA: 1.0
+ALPHA_END: 0.0
+ADAM_ALPHA: 0.00025

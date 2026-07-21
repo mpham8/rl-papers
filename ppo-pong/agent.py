@@ -27,7 +27,7 @@ def compute_return_advantage(rewards_T, values_T, terminals_T, cfg):
     return gae, returns
 
 
-def train_step(model, optimizer, states_T, actions_T, t_idx, n_idx, gae, values_target, log_prob_old, cfg):
+def train_step(model, optimizer, states_T, actions_T, t_idx, n_idx, gae, values_target, log_prob_old, cfg, clip_eps):
     '''optimize surrogate (clipping) wrt theta using minibatch'''
     states_mb = states_T[t_idx, n_idx]
     actions_mb = actions_T[t_idx, n_idx]
@@ -40,7 +40,7 @@ def train_step(model, optimizer, states_T, actions_T, t_idx, n_idx, gae, values_
     dist = Categorical(logits = policy_logits)
     log_prob_new = dist.log_prob(actions_mb)
     r = (log_prob_new - log_prob_old_mb).exp() 
-    L_clip = torch.min(r * gae_mb, torch.clamp(r, 1.0 - cfg['EPS_ALPHA'], 1.0 + cfg['EPS_ALPHA']) * gae_mb) #TODO: eps alpha * alpha   
+    L_clip = torch.min(r * gae_mb, torch.clamp(r, 1.0 - clip_eps, 1.0 + clip_eps) * gae_mb)
     #calculate L val
     L_val = (values.squeeze(-1) - values_target_mb) ** 2
     #entropy S
