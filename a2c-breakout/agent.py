@@ -1,6 +1,5 @@
 import torch
 from torch.distributions import Categorical
-from torch.distributions.utils import logits_to_probs
 
 
 
@@ -9,20 +8,23 @@ def select_action(model_p, model_v, states):
     logits = model_p(states)
     dist = Categorical(logits=logits)
     actions = dist.sample()
-    log_probs = dist.log_prob(actions)
 
-    return actions, log_probs, model_v(states).squeeze(-1)
+    return actions, model_v(states).squeeze(-1)
 
 
-def train_step(optimizer_p, optimizer_v, values, advantages, returns, log_probs):
+def train_step(model_p, model_v, optimizer_p, optimizer_v, states, actions, advantages, returns, cfg):
     '''compute losses, batch update'''
+    logits = model_p(states)
+    dist = Categorical(logits=logits)
+    log_probs = dist.log_prob(actions)
+    values = model_v(states).squeeze(-1)
 
-    loss_p = log_probs * (returns - values.detach())
+    loss_p = -(log_probs * advantages.detach()).mean() - cfg['ENTROPY_COEF'] * dist.entropy().mean()
     optimizer_p.zero_grad()
     loss_p.backward()
     optimizer_p.step()
 
-    loss_v = advantages ** 2
+    loss_v = ((returns - values) ** 2).mean()
     optimizer_v.zero_grad()
     loss_v.backward()
     optimizer_v.step()
@@ -30,7 +32,7 @@ def train_step(optimizer_p, optimizer_v, values, advantages, returns, log_probs)
     return loss_p, loss_v
 
 
-def compute_return_advantage(model, rewards, values_bootstrap, values, terminals, cfg):
+def compute_return_advantage(rewards, values_bootstrap, values, terminals, cfg):
     '''returns for value target, advantages for update'''
 
     returns = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS'], device=rewards.device)

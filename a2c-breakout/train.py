@@ -30,10 +30,10 @@ def train(config=None):
     global_step = 0
     update = 0
 
-    model_p = PolicyFunctionApproximation().cuda()
-    model_v = ValueFunctionApproximation().cuda()
-    optimizer_p = torch.optim.Adam(model_p.parameters(), lr=cfg['LR_P'])
-    optimizer_v = torch.optim.Adam(model_v.parameters(), lr=cfg['LR_V'])
+    model_p = PolicyFunctionApproximation(num_states, cfg['HIDDEN_SIZE'], num_actions).cuda()
+    model_v = ValueFunctionApproximation(num_states, cfg['HIDDEN_SIZE']).cuda()
+    optimizer_p = torch.optim.Adam(model_p.parameters(), lr=cfg['LR'])
+    optimizer_v = torch.optim.Adam(model_v.parameters(), lr=cfg['LR'])
 
 
     start = time.time()
@@ -43,30 +43,34 @@ def train(config=None):
         states_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS'], num_states).cuda()
         rewards_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS']).cuda()
         terminals_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS']).cuda()
-        log_probs_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS']).cuda()
         values_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS']).cuda()
 
         
         #T_MAX rollouts
-        for t in range(cfg['T_MAX']):
-            
-            #sample action, step thru
-            actions_T[t], log_probs_T[t], values_T[t] = compiled_select_action(model_p, model_v, states_t)
-            states_t, rewards_T[t], terminals_T[t] = env.step(actions_T[t])
-            states_T[t, :, :] = states_t
+        with torch.no_grad():
+            for t in range(cfg['T_MAX']):
+                
+                #sample action, step thru
+                actions_T[t], values_T[t] = compiled_select_action(model_p, model_v, states_t)
+                states_t, rewards_T[t], terminals_T[t] = env.step(actions_T[t])
+                states_T[t, :, :] = states_t
 
-            global_step += cfg['TOTAL_AGENTS']
-        
+                global_step += cfg['TOTAL_AGENTS']
+            
         #bootstrap
-        states_bootstrap = model_v(states_t) * (1-terminals_T[cfg['T_MAX']-1])
-        values_bootstrap = model_v(states_bootstrap)
+        values_bootstrap = model_v(states_t).squeeze(-1) * (1 - terminals_T[cfg['T_MAX'] - 1])
 
         #calculate advantages
-        advantages, returns = compute_return_advantage(model_v, rewards_T, values_bootstrap, values_T, terminals_T, cfg['T_MAX'])
+        advantages, returns = compute_return_advantage(rewards_T, values_bootstrap, values_T, terminals_T, cfg)
 
-        #update theta_p, theta_v
-        loss = train_step(optimizer_p, optimizer_v, values_T, advantages, returns, log_probs_T)
+        #linear annealing from LR to 0
+        lr = cfg['LR'] * (1.0 - min(global_step / cfg['TOTAL_ITERS'], 1.0))
+        for optimizer in (optimizer_p, optimizer_v):
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
 
+        loss_p, loss_v = train_step(model_p, model_v, optimizer_p, optimizer_v, states_T, actions_T, advantages, returns, cfg)
+        update += 1
 
         #logging
         if update % cfg['LOG_EVERY'] == 0:
@@ -75,8 +79,9 @@ def train(config=None):
             n_eps = logs.get('n', 0)
             sps = global_step / (time.time() - start)
             print(f'update={update:5d}  steps={global_step:10d}  '
-                f'loss={loss.item():.3f}  '
-                f'episodes={n_eps:.0f}  score={score:.1f}  sps={sps:.0f}')
+                  f'loss_p={loss_p.item():.3f}  loss_v={loss_v.item():.3f}  '
+                  f'episodes={n_eps:.0f}  score={score:.1f}  sps={sps:.0f}')
+           
 
         #saving model weights
         if update % cfg['SAVE_EVERY'] == 0:
