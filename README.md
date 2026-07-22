@@ -10,6 +10,7 @@ PufferLib 4.0 deprecated a lot of the Python and Gymnasium features in favor of 
 |-------|-----------|----------------|
 | [Playing Atari with Deep Reinforcement Learning](https://arxiv.org/abs/1312.5602) (Mnih et al., 2013) | DQN | [`dqn-cartpole/`](dqn-cartpole/) |
 | [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347) (Schulman et al., 2017) | PPO | [`ppo-pong/`](ppo-pong/) |
+| [Asynchronous Methods for Deep Reinforcement Learning](https://arxiv.org/abs/1602.01783) (Mnih et al., 2016) | A2C | [`a2c-breakout/`](a3c-breakout/) |
 
 
 ## Running

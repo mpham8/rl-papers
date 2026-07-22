@@ -1,0 +1,20 @@
+#training params
+TOTAL_ITERS: 1000000
+LOG_EVERY: 10
+SAVE_EVERY: 500
+POLICY_FCN_SAVE_PATH: checkpoints/a2c_breakout_p.pt
+VALUE_FCN_SAVE_PATH: checkpoints/a2c_breakout_v.pt
+
+
+# env params
+TOTAL_AGENTS: 4096
+
+#a2c
+T_MAX: 1000
+
+#model params
+HIDDEN_SIZE: 64
+
+#optimization
+LR_P: 1e-3
+LR_V: 1e-3
