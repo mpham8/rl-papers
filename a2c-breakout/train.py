@@ -51,9 +51,9 @@ def train(config=None):
             for t in range(cfg['T_MAX']):
                 
                 #sample action, step thru
+                states_T[t, :, :] = states_t
                 actions_T[t], values_T[t] = compiled_select_action(model_p, model_v, states_t)
                 states_t, rewards_T[t], terminals_T[t] = env.step(actions_T[t])
-                states_T[t, :, :] = states_t
 
                 global_step += cfg['TOTAL_AGENTS']
             
