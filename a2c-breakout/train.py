@@ -39,6 +39,33 @@ def train(config=None):
     start = time.time()
     states_t = env.reset()
     while global_step < cfg['TOTAL_ITERS']:
+        actions_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS'], dtype=torch.long).cuda()
+        states_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS'], num_states).cuda()
+        rewards_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS']).cuda()
+        terminals_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS']).cuda()
+        log_probs_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS']).cuda()
+        values_T = torch.zeros(cfg['T_MAX'], cfg['TOTAL_AGENTS']).cuda()
+
+        
+        #T_MAX rollouts
+        for t in range(cfg['T_MAX']):
+            
+            #sample action, step thru
+            actions_T[t], log_probs_T[t], values_T[t] = compiled_select_action(model_p, model_v, states_t)
+            states_t, rewards_T[t], terminals_T[t] = env.step(actions_T[t])
+            states_T[t, :, :] = states_t
+
+            global_step += cfg['TOTAL_AGENTS']
+        
+        #bootstrap
+        states_bootstrap = model_v(states_t) * (1-terminals_T[cfg['T_MAX']-1])
+        values_bootstrap = model_v(states_bootstrap)
+
+        #calculate advantages
+        advantages, returns = compute_return_advantage(model_v, rewards_T, values_bootstrap, values_T, terminals_T, cfg['T_MAX'])
+
+        #update theta_p, theta_v
+        loss = train_step(optimizer_p, optimizer_v, values_T, advantages, returns, log_probs_T)
 
 
         #logging
@@ -48,8 +75,8 @@ def train(config=None):
             n_eps = logs.get('n', 0)
             sps = global_step / (time.time() - start)
             print(f'update={update:5d}  steps={global_step:10d}  '
-                  f'loss={loss.item():.3f}  '
-                  f'episodes={n_eps:.0f}  score={score:.1f}  sps={sps:.0f}')
+                f'loss={loss.item():.3f}  '
+                f'episodes={n_eps:.0f}  score={score:.1f}  sps={sps:.0f}')
 
         #saving model weights
         if update % cfg['SAVE_EVERY'] == 0:
