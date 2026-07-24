@@ -1,0 +1,29 @@
+#training params
+TOTAL_ITERS: 10000000
+LOG_EVERY: 100
+SAVE_EVERY: 10000
+Q_FCN_SAVE_PATH: checkpoints/sac_drone_q.pt
+VALUE_FCN_SAVE_PATH: checkpoints/sac_drone_v.pt
+POLICY_FCN_SAVE_PATH: checkpoints/sac_drone_p.pt
+F_FCN_SAVE_PATH: checkpoints/sac_drone_f.pt
+
+
+# env params
+TOTAL_AGENTS: 8192
+
+#sac
+T_MAX: 5
+TAU: 0.005
+TARGET_UPDATE: 1000
+TARGET_GRAD_STEPS: 4
+
+#model params
+HIDDEN_SIZE: 256
+
+#other
+LR: 0.0003
+GAMMA: 0.99
+BUFFER_SIZE: 1000000
+MINIBATCH: 256
+
+
