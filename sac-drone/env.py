@@ -22,7 +22,8 @@ class PufferEnv:
 
         self.vec = self._make_vec()
         self.obs_size = self.vec.obs_size
-        self.num_actions = self.vec.act_sizes[0]
+        #num_atns is the action dim; act_sizes is all 1s for continuous envs
+        self.num_actions = self.vec.num_atns
 
         n, obs = self.total_agents, self.obs_size
         self.vec_state = torch.as_tensor(
@@ -44,7 +45,12 @@ class PufferEnv:
         return self.vec_state.clone()
 
     def step(self, actions):
-        self.vec.gpu_step(actions.to(torch.float32).contiguous().data_ptr())
+        #gpu_step blindly copies total_agents * num_atns floats off this pointer,
+        #so an undersized buffer reads out of bounds instead of raising
+        assert actions.shape == (self.total_agents, self.num_actions), \
+            f'expected actions {(self.total_agents, self.num_actions)}, got {tuple(actions.shape)}'
+        actions = actions.to(torch.float32).contiguous()
+        self.vec.gpu_step(actions.data_ptr())
         torch.cuda.synchronize()
         return (
             self.vec_state.clone(),
