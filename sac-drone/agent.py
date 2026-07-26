@@ -1,11 +1,10 @@
 import torch
-from torch.distributions import Categorical
 
 
 
 def select_action(model_p, states):
     with torch.no_grad():
-        actions, _, _ = model_p.sample(states)
+        actions, _, _, _, _ = model_p.sample(states)
     return actions
 
 
@@ -13,24 +12,25 @@ def train_step(model_v, model_q1, model_q2, model_p, model_vtarget, optimizer_v,
     states, actions, rewards, states_next, terminals = batch
     
     #update soft value function
-    action_current_policy, log_prob, _ = model_p.sample(states)
+    action_current_policy, log_prob, _, _, _ = model_p.sample(states)
 
     q1_current_policy = model_q1(states, action_current_policy)
     q2_current_policy = model_q2(states, action_current_policy)
     q = torch.min(q1_current_policy, q2_current_policy)
     
     v = model_v(states)
-    loss_v = 0.5 * (v - (q - log_prob).detach()).pow(2).mean()
-    
+    loss_v = 0.5 * (v - (q - cfg['ALPHA'] * log_prob).detach()).pow(2).mean()
+
     optimizer_v.zero_grad()
     loss_v.backward()
     optimizer_v.step()
 
 
     #update soft q function
+    #rewards is an n-step discounted sum, so the bootstrap sits n steps out
     with torch.no_grad():
         v_target_next = model_vtarget(states_next)
-        q_target = cfg['REWARD_SCALE'] * rewards + cfg['GAMMA'] * v_target_next* (1-terminals)
+        q_target = cfg['REWARD_SCALE'] * rewards + cfg['GAMMA'] ** cfg['NSTEP'] * v_target_next * (1-terminals)
 
     q1_buffer = model_q1(states, actions)
     q2_buffer = model_q2(states, actions)
@@ -47,12 +47,12 @@ def train_step(model_v, model_q1, model_q2, model_p, model_vtarget, optimizer_v,
 
 
     #update policy function
-    action_current_policy, log_prob, _ = model_p.sample(states)
+    action_current_policy, log_prob, _, _, _ = model_p.sample(states)
     q1_current_policy = model_q1(states, action_current_policy)
     q2_current_policy = model_q2(states, action_current_policy)
     q = torch.min(q1_current_policy, q2_current_policy)
-    
-    loss_p = (log_prob - q).mean()
+
+    loss_p = (cfg['ALPHA'] * log_prob - q).mean()
 
     optimizer_p.zero_grad()
     loss_p.backward()

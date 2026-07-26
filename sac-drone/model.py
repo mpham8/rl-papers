@@ -74,5 +74,5 @@ class PolicyFunction(nn.Module):
 
         mean_action = torch.tanh(mean)
 
-        return a, log_prob, mean_action
+        return a, log_prob, mean_action, mean, log_std
 
