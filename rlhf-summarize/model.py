@@ -1,15 +1,108 @@
+from transformers import AutoModel
+from torch import nn
+
+import torch.nn.functional as F
+
+import torch
+import copy
 
 
-"""Loads Gemma backbone from Huggingface"""
 
-"""Policy head"""
+class LLMBackbone(nn.Module):
+    """Loads LLM backbone from Huggingface AutoModel"""
+    def __init__(self, model_name, data_type, device) -> None:
+        super().__init__()
+        self.backbone = AutoModel.from_pretrained(model_name).to(dtype=data_type).to(device=device)
 
-"""Value head"""
+    def forward(self, input_ids, attention_mask):
+        return self.backbone(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state 
 
-"""SFT"""
 
-"""RM"""
+class PolicyHead(nn.Module):
+    """Policy head"""
+    def __init__(self, hidden, vocab_size) -> None:
+        super().__init__()
+        self.lin = nn.Linear(hidden, vocab_size)
+        
+    def forward(self, x):
+        return self.lin(x)
 
-"""PPO"""
+    def log_probs_for_tokens(self, x, token_ids):
+        log_probs = F.log_softmax(self.forward(x), dim=-1)
+        return torch.gather(log_probs, dim=-1, index=token_ids.unsqueeze(-1)).squeeze(-1)
 
-"""Frozen Model"""
+
+class ValueHead(nn.Module):
+    """Value head"""
+    def __init__(self, hidden) -> None:
+        super().__init__()
+        self.lin = nn.Linear(hidden, 1)
+
+    def forward(self, x):
+        return self.lin(x).squeeze(-1)
+
+
+class SupervisedFineTuningModel(nn.Module):
+    """Supervised Fine-Tuning Model"""
+    def __init__(self, model_name, data_type, device) -> None:
+        super().__init__()
+        self.backbone = LLMBackbone(model_name, data_type, device)
+        hidden = self.backbone.backbone.config.hidden_size
+        vocab_size = self.backbone.backbone.config.vocab_size
+        self.policy_head = PolicyHead(hidden, vocab_size)
+
+    def forward(self, input_ids, attention_mask):
+        hidden_states = self.backbone(input_ids, attention_mask)
+        return self.policy_head(hidden_states)
+
+
+class RewardModel(nn.Module):
+    """Reward Model"""
+    def __init__(self, backbone) -> None:
+        super().__init__()
+        self.backbone = backbone
+        hidden = backbone.backbone.config.hidden_size
+        self.value_head = ValueHead(hidden)
+
+    def forward(self, input_ids, attention_mask):
+        hidden_states = self.backbone(input_ids, attention_mask)
+        per_token_values = self.value_head(hidden_states)
+        
+        position_ids = torch.arange(attention_mask.size(1), device=attention_mask.device)
+        last_idx = (attention_mask * position_ids).argmax(dim=1)
+        rewards = torch.gather(per_token_values, dim=1, index=last_idx.unsqueeze(-1)).squeeze(-1)
+
+        return rewards
+
+    @classmethod
+    def from_sft_model(cls, sft_model):
+        backbone = copy.deepcopy(sft_model.backbone)
+        return cls(backbone)
+
+
+class PPOModel(nn.Module):
+    """PPO"""
+    def __init__(self, backbone, policy_head):
+        super().__init__()
+        self.backbone = backbone
+        hidden = self.backbone.backbone.config.hidden_size
+        self.policy_head = policy_head
+        self.value_head = ValueHead(hidden)
+    
+    def forward(self, input_ids, attention_mask, token_ids=None):
+        hidden_states = self.backbone(input_ids, attention_mask)
+
+        logits = self.policy_head(hidden_states)
+        values = self.value_head(hidden_states)
+
+        if token_ids is None:
+            return logits, values
+        log_probs = self.policy_head.log_probs_for_tokens(hidden_states, token_ids)
+        return logits, values, log_probs
+
+
+    @classmethod
+    def from_sft_model(cls, sft_model):
+        backbone = copy.deepcopy(sft_model.backbone)
+        policy_head = copy.deepcopy(sft_model.policy_head)
+        return cls(backbone, policy_head)
