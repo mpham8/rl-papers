@@ -146,6 +146,66 @@ def build_ppo_dataset(post_ids: set[str], posts: dict[str, list[dict]]) -> Datas
     return Dataset.from_list(examples)
 
 
+def _tokenize_query_summary(query, summary, tokenizer, max_length):
+    query_ids = tokenizer.encode(query, add_special_tokens=False)
+    if not summary.startswith(" "):
+        summary = " " + summary
+    summary_ids = tokenizer.encode(summary, add_special_tokens=False)
+    eos_id = tokenizer.eos_token_id
+
+    max_query_len = max_length - len(summary_ids) - 1
+    if max_query_len < 1:
+        return None
+    if len(query_ids) > max_query_len:
+        query_ids = query_ids[-max_query_len:]
+
+    return query_ids + summary_ids + [eos_id]
+
+
+def _pad_sequences(sequences, pad_id, device):
+    batch_size = len(sequences)
+    seq_len = max(len(ids) for ids in sequences)
+    input_ids = torch.full((batch_size, seq_len), pad_id, dtype=torch.long)
+    attention_mask = torch.zeros((batch_size, seq_len), dtype=torch.long)
+
+    for i, ids in enumerate(sequences):
+        input_ids[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+        attention_mask[i, : len(ids)] = 1
+
+    return input_ids.to(device), attention_mask.to(device)
+
+
+def collate_rm_batch(examples, tokenizer, device, max_length):
+    chosen_ids_list = []
+    rejected_ids_list = []
+
+    for example in examples:
+        chosen_ids = _tokenize_query_summary(
+            example["query"], example["chosen_summary"], tokenizer, max_length
+        )
+        rejected_ids = _tokenize_query_summary(
+            example["query"], example["rejected_summary"], tokenizer, max_length
+        )
+        if chosen_ids is None or rejected_ids is None:
+            continue
+        chosen_ids_list.append(chosen_ids)
+        rejected_ids_list.append(rejected_ids)
+
+    if not chosen_ids_list:
+        raise ValueError("batch is empty after tokenization")
+
+    pad_id = tokenizer.pad_token_id
+    chosen_input_ids, chosen_attention_mask = _pad_sequences(chosen_ids_list, pad_id, device)
+    rejected_input_ids, rejected_attention_mask = _pad_sequences(rejected_ids_list, pad_id, device)
+
+    return {
+        "chosen_input_ids": chosen_input_ids,
+        "chosen_attention_mask": chosen_attention_mask,
+        "rejected_input_ids": rejected_input_ids,
+        "rejected_attention_mask": rejected_attention_mask,
+    }
+
+
 def collate_sft_batch(examples, tokenizer, device, max_length):
     input_ids_list = []
     labels_list = []
@@ -156,16 +216,14 @@ def collate_sft_batch(examples, tokenizer, device, max_length):
         if not summary.startswith(" "):
             summary = " " + summary
         summary_ids = tokenizer.encode(summary, add_special_tokens=False)
-        eos_id = tokenizer.eos_token_id
 
-        max_query_len = max_length - len(summary_ids) - 1
-        if max_query_len < 1:
+        input_ids = _tokenize_query_summary(
+            example["query"], example["reference_summary"], tokenizer, max_length
+        )
+        if input_ids is None:
             continue
-        if len(query_ids) > max_query_len:
-            query_ids = query_ids[-max_query_len:]
-
-        input_ids = query_ids + summary_ids + [eos_id]
-        labels = [-100] * len(query_ids) + summary_ids + [eos_id]
+        query_len = len(input_ids) - len(summary_ids) - 1
+        labels = [-100] * query_len + summary_ids + [tokenizer.eos_token_id]
         input_ids_list.append(input_ids)
         labels_list.append(labels)
 

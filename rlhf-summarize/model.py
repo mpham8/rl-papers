@@ -66,12 +66,10 @@ class SupervisedFineTuningModel(nn.Module):
 
 class RewardModel(nn.Module):
     """Reward Model"""
-    def __init__(self, backbone) -> None:
+    def __init__(self, backbone, device, dtype) -> None:
         super().__init__()
         self.backbone = backbone
         hidden = backbone.backbone.config.hidden_size
-        device = next(backbone.parameters()).device
-        dtype = next(backbone.parameters()).dtype
         self.value_head = ValueHead(hidden).to(dtype=dtype, device=device)
 
     def forward(self, input_ids, attention_mask):
@@ -85,20 +83,18 @@ class RewardModel(nn.Module):
         return rewards
 
     @classmethod
-    def from_sft_model(cls, sft_model):
+    def from_sft_model(cls, sft_model, device, dtype):
         backbone = copy.deepcopy(sft_model.backbone)
-        return cls(backbone)
+        return cls(backbone, device, dtype)
 
 
 class PPOModel(nn.Module):
     """PPO"""
-    def __init__(self, backbone, policy_head):
+    def __init__(self, backbone, policy_head, device, dtype):
         super().__init__()
         self.backbone = backbone
         hidden = self.backbone.backbone.config.hidden_size
         self.policy_head = policy_head
-        device = next(backbone.parameters()).device
-        dtype = next(backbone.parameters()).dtype
         self.value_head = ValueHead(hidden).to(dtype=dtype, device=device)
     
     def forward(self, input_ids, attention_mask, token_ids=None):
@@ -114,7 +110,7 @@ class PPOModel(nn.Module):
 
 
     @classmethod
-    def from_sft_model(cls, sft_model):
+    def from_sft_model(cls, sft_model, device, dtype):
         backbone = copy.deepcopy(sft_model.backbone)
         policy_head = copy.deepcopy(sft_model.policy_head)
-        return cls(backbone, policy_head)
+        return cls(backbone, policy_head, device, dtype)
