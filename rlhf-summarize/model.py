@@ -49,11 +49,19 @@ class SupervisedFineTuningModel(nn.Module):
         self.backbone = LLMBackbone(model_name, data_type, device)
         hidden = self.backbone.backbone.config.hidden_size
         vocab_size = self.backbone.backbone.config.vocab_size
-        self.policy_head = PolicyHead(hidden, vocab_size)
+        self.policy_head = PolicyHead(hidden, vocab_size).to(dtype=data_type, device=device)
 
     def forward(self, input_ids, attention_mask):
         hidden_states = self.backbone(input_ids, attention_mask)
         return self.policy_head(hidden_states)
+
+    def sft_loss(self, input_ids, attention_mask, labels):
+        hidden_states = self.backbone(input_ids, attention_mask)
+        shift_hidden = hidden_states[:, :-1, :]
+        shift_labels = labels[:, 1:]
+        mask = shift_labels != -100
+        logits = self.policy_head.lin(shift_hidden[mask])
+        return F.cross_entropy(logits, shift_labels[mask])
 
 
 class RewardModel(nn.Module):
@@ -62,7 +70,9 @@ class RewardModel(nn.Module):
         super().__init__()
         self.backbone = backbone
         hidden = backbone.backbone.config.hidden_size
-        self.value_head = ValueHead(hidden)
+        device = next(backbone.parameters()).device
+        dtype = next(backbone.parameters()).dtype
+        self.value_head = ValueHead(hidden).to(dtype=dtype, device=device)
 
     def forward(self, input_ids, attention_mask):
         hidden_states = self.backbone(input_ids, attention_mask)
@@ -87,7 +97,9 @@ class PPOModel(nn.Module):
         self.backbone = backbone
         hidden = self.backbone.backbone.config.hidden_size
         self.policy_head = policy_head
-        self.value_head = ValueHead(hidden)
+        device = next(backbone.parameters()).device
+        dtype = next(backbone.parameters()).dtype
+        self.value_head = ValueHead(hidden).to(dtype=dtype, device=device)
     
     def forward(self, input_ids, attention_mask, token_ids=None):
         hidden_states = self.backbone(input_ids, attention_mask)
