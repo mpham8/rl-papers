@@ -92,6 +92,10 @@ def train_rm(config=None):
             n_batches += 1
             train_pbar.set_postfix(loss=f"{loss.item():.4f}")
 
+            if n_batches % 100 == 0:
+                save_checkpoint(reward_model, Path(cfg["RM_SAVE_PATH"]), f"rm_batch{n_batches}.pt")
+
+
         reward_model.eval()
         val_loss_total = 0.0
         val_batches = 0
@@ -107,7 +111,6 @@ def train_rm(config=None):
         val_loss = val_loss_total / max(val_batches, 1)
         print(f"epoch={epoch + 1}/{cfg['RM_EPOCHS']}  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
 
-        save_checkpoint(reward_model, Path(cfg["RM_SAVE_PATH"]), f"rm_epoch{epoch + 1}.pt")
     
     save_checkpoint(reward_model, Path(cfg["RM_SAVE_PATH"]), "rm.pt")
 

@@ -162,6 +162,15 @@ def _tokenize_query_summary(query, summary, tokenizer, max_length):
     return query_ids + summary_ids + [eos_id]
 
 
+def _tokenize_query(query, tokenizer, max_query_len):
+    query_ids = tokenizer.encode(query, add_special_tokens=False)
+    if max_query_len < 1:
+        return None
+    if len(query_ids) > max_query_len:
+        query_ids = query_ids[-max_query_len:]
+    return query_ids
+
+
 def _pad_sequences(sequences, pad_id, device):
     batch_size = len(sequences)
     seq_len = max(len(ids) for ids in sequences)
@@ -203,6 +212,31 @@ def collate_rm_batch(examples, tokenizer, device, max_length):
         "chosen_attention_mask": chosen_attention_mask,
         "rejected_input_ids": rejected_input_ids,
         "rejected_attention_mask": rejected_attention_mask,
+    }
+
+
+def collate_ppo_batch(examples, tokenizer, device, max_length, max_new_tokens):
+    max_query_len = max_length - max_new_tokens - 1
+    ids_list = []
+    post_ids = []
+
+    for example in examples:
+        query_ids = _tokenize_query(example["query"], tokenizer, max_query_len)
+        if query_ids is None:
+            continue
+        ids_list.append(query_ids)
+        post_ids.append(example["post_id"])
+
+    if not ids_list:
+        raise ValueError("batch is empty after tokenization")
+
+    pad_id = tokenizer.pad_token_id
+    input_ids, attention_mask = _pad_sequences(ids_list, pad_id, device)
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "post_ids": post_ids,
     }
 
 

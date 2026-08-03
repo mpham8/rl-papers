@@ -4,6 +4,7 @@ from train_sft import train_sft
 import sys
 from train_sft import train_sft
 from train_rm import train_rm
+from train_ppo import train_ppo
 
 
 if __name__ == '__main__':
@@ -17,12 +18,12 @@ if __name__ == '__main__':
         train_sft()
     elif arg == "rm":
         train_rm()
-    # elif arg == "ppo":
-    #   train_ppo()
+    elif arg == "ppo":
+        train_ppo()
     elif arg == "all":
         train_sft()
         train_rm()
-        # train_ppo()
+        train_ppo()
 
     else:
         print("Unknown argument:", arg)

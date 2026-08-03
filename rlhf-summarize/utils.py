@@ -1,5 +1,5 @@
 from pathlib import Path
-from model import SupervisedFineTuningModel
+from model import LLMBackbone, RewardModel, SupervisedFineTuningModel
 
 import torch
 
@@ -17,6 +17,15 @@ def load_sft_model(model_name, data_type, device, checkpoint_dir, checkpoint_fil
 
     checkpoint_path = Path(checkpoint_dir) / checkpoint_file
     model = SupervisedFineTuningModel(model_name, data_type, device)
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+    model.eval()
+    return model
+
+
+def load_rm_model(model_name, data_type, device, checkpoint_dir, checkpoint_file="rm.pt"):
+    checkpoint_path = Path(checkpoint_dir) / checkpoint_file
+    backbone = LLMBackbone(model_name, data_type, device)
+    model = RewardModel(backbone, device, data_type)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
     model.eval()
     return model
