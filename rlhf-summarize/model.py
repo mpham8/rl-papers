@@ -97,8 +97,17 @@ class PPOModel(nn.Module):
         self.policy_head = policy_head
         self.value_head = ValueHead(hidden).to(dtype=dtype, device=device)
     
-    def forward(self, input_ids, attention_mask, token_ids=None):
+    def forward(self, input_ids, attention_mask, token_ids=None, last_token_only=False):
         hidden_states = self.backbone(input_ids, attention_mask)
+
+        if last_token_only:
+            last_hidden = hidden_states[:, -1, :]
+            logits = self.policy_head.lin(last_hidden)
+            values = self.value_head.lin(last_hidden).squeeze(-1)
+            if token_ids is None:
+                return logits, values
+            log_probs = F.log_softmax(logits, dim=-1).gather(1, token_ids.unsqueeze(-1)).squeeze(-1)
+            return logits, values, log_probs
 
         logits = self.policy_head(hidden_states)
         values = self.value_head(hidden_states)
