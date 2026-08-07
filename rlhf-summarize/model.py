@@ -117,6 +117,14 @@ class PPOModel(nn.Module):
         log_probs = self.policy_head.log_probs_for_tokens(hidden_states, token_ids)
         return logits, values, log_probs
 
+    def pretrain_mix_loss(self, input_ids, attention_mask):
+        hidden_states = self.backbone(input_ids, attention_mask)
+        shift_hidden = hidden_states[:, :-1, :]
+        shift_labels = input_ids[:, 1:]
+        shift_mask = attention_mask[:, 1:]
+        logits = self.policy_head.lin(shift_hidden[shift_mask.bool()])
+        return F.cross_entropy(logits, shift_labels[shift_mask.bool()])
+
 
     @classmethod
     def from_sft_model(cls, sft_model, device, dtype):

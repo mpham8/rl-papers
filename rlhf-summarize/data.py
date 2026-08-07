@@ -14,6 +14,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import random
+
 import numpy as np
 import torch
 import yaml
@@ -238,6 +240,56 @@ def collate_ppo_batch(examples, tokenizer, device, max_length, max_new_tokens):
         "attention_mask": attention_mask,
         "post_ids": post_ids,
     }
+
+
+def collate_pretrain_batch(examples, tokenizer, device, max_length):
+    ids_list = []
+    for example in examples:
+        text = example["text"].strip()
+        if not text:
+            continue
+        ids = tokenizer.encode(text, add_special_tokens=False)
+        if len(ids) < 2:
+            continue
+        if len(ids) > max_length:
+            start = random.randint(0, len(ids) - max_length)
+            ids = ids[start : start + max_length]
+        ids_list.append(ids)
+
+    if not ids_list:
+        raise ValueError("pretrain batch is empty after tokenization")
+
+    pad_id = tokenizer.pad_token_id
+    input_ids, attention_mask = _pad_sequences(ids_list, pad_id, device)
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+    }
+
+
+def load_pretrain_data(cfg):
+    dataset_name = cfg.get("PPO_PRETRAIN_DATASET", "HuggingFaceFW/fineweb-edu")
+    config_name = cfg.get("PPO_PRETRAIN_CONFIG")
+    streaming = cfg.get("PPO_PRETRAIN_STREAMING", True)
+    kwargs = {"path": dataset_name, "split": "train", "streaming": streaming}
+    if config_name:
+        kwargs["name"] = config_name
+    data = load_dataset(**kwargs)
+    if streaming:
+        buffer_size = cfg.get("PPO_PRETRAIN_SHUFFLE_BUFFER", 10000)
+        data = data.shuffle(seed=cfg["SEED"], buffer_size=buffer_size)
+    return data
+
+
+def next_pretrain_batch(example_iter, collate_fn, batch_size, restart_stream):
+    examples = []
+    while len(examples) < batch_size:
+        try:
+            examples.append(next(example_iter))
+        except StopIteration:
+            example_iter = iter(restart_stream())
+            examples.append(next(example_iter))
+    return collate_fn(examples), example_iter
 
 
 def collate_sft_batch(examples, tokenizer, device, max_length):

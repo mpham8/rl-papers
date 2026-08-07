@@ -2,6 +2,7 @@ from pathlib import Path
 from model import LLMBackbone, RewardModel, SupervisedFineTuningModel
 
 import torch
+from transformers import AutoModelForCausalLM
 
 from data import _pad_sequences, _tokenize_query_summary
 
@@ -24,6 +25,21 @@ def load_sft_model(model_name, data_type, device, checkpoint_dir, checkpoint_fil
     return model
 
 
+def load_base_model(model_name, data_type, device):
+    model = SupervisedFineTuningModel(model_name, data_type, device)
+    causal_lm = AutoModelForCausalLM.from_pretrained(model_name).to(dtype=data_type, device=device)
+    with torch.no_grad():
+        model.policy_head.lin.weight.copy_(causal_lm.lm_head.weight)
+        if model.policy_head.lin.bias is not None:
+            if getattr(causal_lm.lm_head, "bias", None) is not None:
+                model.policy_head.lin.bias.copy_(causal_lm.lm_head.bias)
+            else:
+                model.policy_head.lin.bias.zero_()
+    del causal_lm
+    model.eval()
+    return model
+
+
 def load_rm_model(model_name, data_type, device, checkpoint_dir, checkpoint_file="rm.pt"):
     checkpoint_path = Path(checkpoint_dir) / checkpoint_file
     backbone = LLMBackbone(model_name, data_type, device)
@@ -31,6 +47,17 @@ def load_rm_model(model_name, data_type, device, checkpoint_dir, checkpoint_file
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
     model.eval()
     return model
+
+
+def load_ppo_model(model_name, data_type, device, sft_checkpoint_dir, ppo_checkpoint_dir, sft_file="sft.pt", ppo_file="ppo.pt"):
+    sft_model = load_sft_model(model_name, data_type, device, sft_checkpoint_dir, sft_file)
+    from model import PPOModel
+
+    ppo_model = PPOModel.from_sft_model(sft_model, device, data_type)
+    checkpoint_path = Path(ppo_checkpoint_dir) / ppo_file
+    ppo_model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+    ppo_model.eval()
+    return ppo_model
 
 
 def compute_rm_offset(reward_model, sft_data, tokenizer, device, max_length, batch_size=8):

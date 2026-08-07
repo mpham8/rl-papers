@@ -14,7 +14,13 @@ from agent import (
     select_action,
     train_step,
 )
-from data import collate_ppo_batch, load_rlhf_splits
+from data import (
+    collate_ppo_batch,
+    collate_pretrain_batch,
+    load_pretrain_data,
+    load_rlhf_splits,
+    next_pretrain_batch,
+)
 from model import PPOModel
 from utils import (
     compute_rm_offset,
@@ -89,6 +95,25 @@ def train_ppo(config=None):
         collate_fn=collate,
     )
 
+    pretrain_gamma = cfg["PPO_PRETRAIN_GAMMA"] 
+    pretrain_example_iter = None
+    pretrain_collate = None
+    pretrain_batch_size = cfg["PPO_PRETRAIN_BATCH"]
+    pretrain_stream_factory = None
+    if pretrain_gamma > 0:
+        pretrain_collate = partial(
+            collate_pretrain_batch,
+            tokenizer=tokenizer,
+            device=device,
+            max_length=max_length,
+        )
+        pretrain_stream_factory = lambda: load_pretrain_data(cfg)
+        pretrain_example_iter = iter(pretrain_stream_factory())
+        print(
+            f"pretrain mix enabled: gamma={pretrain_gamma}  "
+            f"dataset={cfg.get('PPO_PRETRAIN_DATASET', 'HuggingFaceFW/fineweb-edu')}"
+        )
+
     iters = 0
     rollout = 0
     T = cfg["PPO_MAX_NEW_TOKENS"]
@@ -161,7 +186,20 @@ def train_ppo(config=None):
             n_idx = minibatch_idx % cfg["PPO_BATCH"]
 
             input_ids_mb, attention_mask_mb = build_prefix_minibatch(prompt_ids, actions_T, n_idx, t_idx, pad_id, device)
-            train_step(ppo_model, optimizer, input_ids_mb, attention_mask_mb, actions_T[n_idx, t_idx], gae[t_idx, n_idx], returns[t_idx, n_idx], log_probs_T[n_idx, t_idx], clip_eps, cfg["PPO_C1"])
+
+            pretrain_input_ids = None
+            pretrain_attention_mask = None
+            pretrain_batch, pretrain_example_iter = next_pretrain_batch(
+                pretrain_example_iter,
+                pretrain_collate,
+                pretrain_batch_size,
+                pretrain_stream_factory,
+            )
+            pretrain_input_ids = pretrain_batch["input_ids"]
+            pretrain_attention_mask = pretrain_batch["attention_mask"]
+           
+            train_step(ppo_model, optimizer, input_ids_mb, attention_mask_mb, actions_T[n_idx, t_idx], gae[t_idx, n_idx], returns[t_idx, n_idx], log_probs_T[n_idx, t_idx], clip_eps, cfg["PPO_C1"], pretrain_input_ids=pretrain_input_ids, pretrain_attention_mask=pretrain_attention_mask, pretrain_gamma=pretrain_gamma)
+       
        
        
 

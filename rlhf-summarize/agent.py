@@ -51,16 +51,16 @@ def build_prefix_minibatch(prompt_ids, actions_T, n_idx, t_idx, pad_id, device):
     return input_ids_mb, attention_mask_mb
 
 
-def train_step(model, optimizer, input_ids_mb, attention_mask_mb, actions_mb, gae_mb, values_target_mb, log_prob_old_mb, clip_eps, c1):
+def train_step(model, optimizer, input_ids_mb, attention_mask_mb, actions_mb, gae_mb, values_target_mb, log_prob_old_mb, clip_eps, c1, pretrain_input_ids=None, pretrain_attention_mask=None, pretrain_gamma=0.0):
     logits, values = model(input_ids_mb, attention_mask_mb, last_token_only=True)
     dist = Categorical(logits=logits)
     log_prob_new = dist.log_prob(actions_mb)
     r = (log_prob_new - log_prob_old_mb).exp()
     L_clip = torch.min(r * gae_mb, torch.clamp(r, 1.0 - clip_eps, 1.0 + clip_eps) * gae_mb)
     L_val = (values - values_target_mb) ** 2
-    loss = -L_clip.mean() + c1 * L_val.mean()
+    loss = -L_clip.mean() + c1 * L_val.mean() + pretrain_gamma * model.pretrain_mix_loss(pretrain_input_ids, pretrain_attention_mask)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
-
+    
     return loss.detach()

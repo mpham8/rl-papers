@@ -1,15 +1,14 @@
-
-from train_sft import train_sft
-
 import sys
+
 from train_sft import train_sft
 from train_rm import train_rm
 from train_ppo import train_ppo
+from eval import run_eval
 
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print("Please specify one of: sft, rm, ppo, all")
+        print("Please specify one of: sft, rm, ppo, eval, all")
         sys.exit(1)
 
     arg = sys.argv[1].lower()
@@ -20,6 +19,8 @@ if __name__ == '__main__':
         train_rm()
     elif arg == "ppo":
         train_ppo()
+    elif arg == "eval":
+        run_eval()
     elif arg == "all":
         train_sft()
         train_rm()
@@ -27,5 +28,5 @@ if __name__ == '__main__':
 
     else:
         print("Unknown argument:", arg)
-        print("Please specify one of: sft, rm, ppo, all")
+        print("Please specify one of: sft, rm, ppo, eval, all")
         sys.exit(1)
