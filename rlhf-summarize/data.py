@@ -148,6 +148,23 @@ def build_ppo_dataset(post_ids: set[str], posts: dict[str, list[dict]]) -> Datas
     return Dataset.from_list(examples)
 
 
+def load_reference_summary_map(config=None) -> dict[str, str]:
+    """Human reference (label) TL;DR for every post in comparisons.train."""
+    comparisons = load_dataset(
+        "openai/summarize_from_feedback", "comparisons", trust_remote_code=True
+    )
+    posts = _group_comparisons_by_post(comparisons["train"])
+    refs = {}
+    for post_id, rows in posts.items():
+        ref = _ref_summary(rows)
+        if ref is None:
+            continue
+        if not ref.startswith(" "):
+            ref = " " + ref
+        refs[post_id] = ref
+    return refs
+
+
 def _tokenize_query_summary(query, summary, tokenizer, max_length):
     query_ids = tokenizer.encode(query, add_special_tokens=False)
     if not summary.startswith(" "):

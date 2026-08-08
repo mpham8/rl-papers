@@ -1,8 +1,11 @@
 """
-Run evals: hellaswag, mmlu, rouge-l, rm win rate vs sft
+Run evals: hellaswag, mmlu, rouge-l, rm win rate vs sft, gpt judge pairwise (incl. human label)
 """
 
 import argparse
+import os
+import random
+import time
 from functools import partial
 from pathlib import Path
 
@@ -15,13 +18,37 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
 from data import (
     _pad_sequences,
     collate_ppo_batch,
+    load_reference_summary_map,
     load_rlhf_splits,
 )
 from model import PPOModel
 from utils import load_base_model, load_ppo_model, load_rm_model, load_sft_model
+
+
+def _load_env():
+    if load_dotenv is not None:
+        load_dotenv(Path(__file__).parent / ".env")
+
+
+def _openai_client():
+    _load_env()
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Export it or add it to rlhf-summarize/.env "
+            "(see .env.example)."
+        )
+    from openai import OpenAI
+
+    return OpenAI(api_key=api_key)
 
 
 def _policy_logits(model, input_ids, attention_mask):
@@ -172,6 +199,229 @@ def eval_rouge_l(model, dataset, tokenizer, device, max_length, max_new_tokens, 
 
 
 @torch.inference_mode()
+def _summaries_for_dataset(model, dataset, tokenizer, device, max_length, max_new_tokens, batch_size, desc):
+    collate = partial(
+        collate_ppo_batch,
+        tokenizer=tokenizer,
+        device=device,
+        max_length=max_length,
+        max_new_tokens=max_new_tokens,
+    )
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate)
+    summaries = {}
+
+    for batch in tqdm(loader, desc=desc):
+        generated_ids = _generate_summaries(
+            model,
+            batch["input_ids"],
+            batch["attention_mask"],
+            max_new_tokens,
+            tokenizer.eos_token_id,
+        )
+        predictions = _decode_summaries(tokenizer, generated_ids)
+        for post_id, prediction in zip(batch["post_ids"], predictions):
+            summaries[post_id] = prediction
+
+    return summaries
+
+
+_GPT_JUDGE_PROMPT = """You are judging TL;DR summaries of Reddit posts.
+
+Which summary is better? Prefer summaries that are accurate, concise, capture the main point, and read like a good TL;DR.
+
+{post}
+
+Summary A:
+{summary_a}
+
+Summary B:
+{summary_b}
+
+Reply with exactly one word: A, B, or tie."""
+
+
+def _parse_gpt_verdict(text):
+    cleaned = text.strip().upper()
+    if cleaned.startswith("A"):
+        return "A"
+    if cleaned.startswith("B"):
+        return "B"
+    if "TIE" in cleaned:
+        return "tie"
+    return None
+
+
+def _gpt_judge_pair(client, judge_model, post, summary_a, summary_b, max_retries=5):
+    message = _GPT_JUDGE_PROMPT.format(
+        post=post,
+        summary_a=summary_a.strip(),
+        summary_b=summary_b.strip(),
+    )
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=judge_model,
+                messages=[{"role": "user", "content": message}],
+                max_completion_tokens=8,
+            )
+            verdict = _parse_gpt_verdict(response.choices[0].message.content or "")
+            if verdict is not None:
+                return verdict
+        except Exception as exc:
+            if attempt == max_retries - 1:
+                raise RuntimeError(f"GPT judge API failed after {max_retries} tries: {exc}") from exc
+            time.sleep(2 ** attempt)
+    return "tie"
+
+
+def _select_eval_subset(dataset, limit, seed):
+    n = min(limit, len(dataset))
+    indices = list(range(len(dataset)))
+    rng = random.Random(seed)
+    rng.shuffle(indices)
+    return dataset.select(indices[:n])
+
+
+def eval_gpt_pairwise(
+    client,
+    judge_model,
+    dataset,
+    queries,
+    challenger_summaries,
+    baseline_summaries,
+    challenger_name,
+    baseline_name,
+    seed,
+):
+    wins = 0
+    ties = 0
+    total = 0
+    rng = random.Random(seed)
+
+    for example in tqdm(dataset, desc=f"gpt judge ({challenger_name} vs {baseline_name})"):
+        post_id = example["post_id"]
+        post = queries[post_id]
+        challenger = challenger_summaries[post_id]
+        baseline = baseline_summaries[post_id]
+
+        swap = rng.random() < 0.5
+        if swap:
+            summary_a, summary_b = challenger, baseline
+            challenger_is_a = True
+        else:
+            summary_a, summary_b = baseline, challenger
+            challenger_is_a = False
+
+        verdict = _gpt_judge_pair(client, judge_model, post, summary_a, summary_b)
+        if verdict == "tie":
+            ties += 1
+        elif (verdict == "A" and challenger_is_a) or (verdict == "B" and not challenger_is_a):
+            wins += 1
+        total += 1
+
+    return {
+        "win_rate": wins / max(total, 1),
+        "tie_rate": ties / max(total, 1),
+        "n": total,
+        "challenger": challenger_name,
+        "baseline": baseline_name,
+        "judge_model": judge_model,
+    }
+
+
+def run_gpt_judge_eval(
+    cfg,
+    ppo_model,
+    sft_model,
+    base_model,
+    tokenizer,
+    device,
+    dataset,
+    limit,
+    batch_size,
+    judge_model,
+    seed,
+):
+    reference_map = load_reference_summary_map(config=cfg)
+    labeled_ids = set(reference_map.keys())
+    dataset = dataset.filter(lambda ex: ex["post_id"] in labeled_ids)
+    subset = _select_eval_subset(dataset, limit, seed)
+    if len(subset) < limit:
+        print(f"gpt judge: using {len(subset)} prompts with human labels (requested {limit})")
+    queries = {example["post_id"]: example["query"] for example in subset}
+    label_summaries = {example["post_id"]: reference_map[example["post_id"]] for example in subset}
+
+    ppo_summaries = _summaries_for_dataset(
+        ppo_model,
+        subset,
+        tokenizer,
+        device,
+        cfg["PPO_MAX_LENGTH"],
+        cfg["PPO_MAX_NEW_TOKENS"],
+        batch_size,
+        desc="generate ppo summaries",
+    )
+    base_summaries = _summaries_for_dataset(
+        base_model,
+        subset,
+        tokenizer,
+        device,
+        cfg["PPO_MAX_LENGTH"],
+        cfg["PPO_MAX_NEW_TOKENS"],
+        batch_size,
+        desc="generate base summaries",
+    )
+    sft_summaries = _summaries_for_dataset(
+        sft_model,
+        subset,
+        tokenizer,
+        device,
+        cfg["PPO_MAX_LENGTH"],
+        cfg["PPO_MAX_NEW_TOKENS"],
+        batch_size,
+        desc="generate sft summaries",
+    )
+
+    client = _openai_client()
+    results = {
+        "ppo_vs_base": eval_gpt_pairwise(
+            client,
+            judge_model,
+            subset,
+            queries,
+            ppo_summaries,
+            base_summaries,
+            challenger_name="ppo",
+            baseline_name="base",
+            seed=seed,
+        ),
+        "ppo_vs_sft": eval_gpt_pairwise(
+            client,
+            judge_model,
+            subset,
+            queries,
+            ppo_summaries,
+            sft_summaries,
+            challenger_name="ppo",
+            baseline_name="sft",
+            seed=seed + 1,
+        ),
+        "ppo_vs_label": eval_gpt_pairwise(
+            client,
+            judge_model,
+            subset,
+            queries,
+            ppo_summaries,
+            label_summaries,
+            challenger_name="ppo",
+            baseline_name="label",
+            seed=seed + 2,
+        ),
+    }
+    return results
+
+
+@torch.inference_mode()
 def eval_rm_win_rate(sft_model, ppo_model, reward_model, dataset, tokenizer, device, max_length, max_new_tokens, batch_size):
     collate = partial(
         collate_ppo_batch,
@@ -242,6 +492,8 @@ def run_eval(
     base=False,
     rouge_split="validation",
     limits=None,
+    gpt_judge=False,
+    gpt_judge_only=False,
 ):
     with open(Path(__file__).parent / "config.yaml") as f:
         cfg = config or yaml.safe_load(f)
@@ -251,6 +503,14 @@ def run_eval(
     limits.setdefault("mmlu", None)
     limits.setdefault("rouge", None)
     limits.setdefault("rm_win_rate", None)
+    limits.setdefault("gpt_judge", None)
+
+    if gpt_judge_only:
+        gpt_judge = True
+        limits["hellaswag"] = 0
+        limits["mmlu"] = 0
+        limits["rouge"] = 0
+        limits["rm_win_rate"] = 0
 
     device = "cuda"
     dtype = torch.bfloat16
@@ -266,6 +526,7 @@ def run_eval(
         rouge_dataset = rouge_dataset.select(range(min(limits["rouge"], len(rouge_dataset))))
 
     rm_dataset = splits["ppo"][rouge_split]
+    gpt_judge_dataset = rm_dataset
     if limits["rm_win_rate"] is not None:
         rm_dataset = rm_dataset.select(range(min(limits["rm_win_rate"], len(rm_dataset))))
 
@@ -277,7 +538,10 @@ def run_eval(
         results = {"base": _eval_model_suite(eval_model, "base", tokenizer, device, cfg, rouge_dataset, rouge_batch_size, limits)}
     else:
         sft_model = load_sft_model(model_name, dtype, device, cfg["SFT_SAVE_PATH"], sft_checkpoint)
-        results = {"sft": _eval_model_suite(sft_model, "sft", tokenizer, device, cfg, rouge_dataset, rouge_batch_size, limits)}
+        if gpt_judge and ppo_checkpoint is not None and limits.get("hellaswag") == 0 and limits.get("mmlu") == 0 and limits.get("rouge") == 0:
+            results = {}
+        else:
+            results = {"sft": _eval_model_suite(sft_model, "sft", tokenizer, device, cfg, rouge_dataset, rouge_batch_size, limits)}
 
     if ppo_checkpoint is not None:
         ppo_model = load_ppo_model(
@@ -289,9 +553,10 @@ def run_eval(
             sft_file=sft_checkpoint,
             ppo_file=ppo_checkpoint,
         )
-        results["ppo"] = _eval_model_suite(ppo_model, "ppo", tokenizer, device, cfg, rouge_dataset, rouge_batch_size, limits)
+        if not (gpt_judge and limits.get("hellaswag") == 0 and limits.get("mmlu") == 0 and limits.get("rouge") == 0):
+            results["ppo"] = _eval_model_suite(ppo_model, "ppo", tokenizer, device, cfg, rouge_dataset, rouge_batch_size, limits)
 
-        if not base:
+        if not base and limits["rm_win_rate"] != 0:
             reward_model = load_rm_model(model_name, dtype, device, cfg["RM_SAVE_PATH"])
             rm_stats = eval_rm_win_rate(
                 sft_model,
@@ -308,6 +573,34 @@ def run_eval(
             print(f"\n=== rm win rate (ppo vs sft) ===")
             print(f"win_rate={rm_stats['win_rate']:.4f}  tie_rate={rm_stats['tie_rate']:.4f}  n={rm_stats['n']}")
 
+        if gpt_judge:
+            if base:
+                raise ValueError("--gpt-judge requires SFT and PPO checkpoints (do not pass --base alone)")
+            base_model = load_base_model(model_name, dtype, device)
+            gpt_limit = limits.get("gpt_judge") or cfg.get("GPT_JUDGE_LIMIT", 100)
+            judge_model = cfg.get("GPT_JUDGE_MODEL", "gpt-5.6-luna")
+            gpt_stats = run_gpt_judge_eval(
+                cfg,
+                ppo_model,
+                sft_model,
+                base_model,
+                tokenizer,
+                device,
+                gpt_judge_dataset,
+                gpt_limit,
+                rm_batch_size,
+                judge_model,
+                cfg.get("SEED", 42),
+            )
+            results["gpt_judge"] = gpt_stats
+            print(f"\n=== gpt judge ({judge_model}) ===")
+            for key in ("ppo_vs_base", "ppo_vs_sft", "ppo_vs_label"):
+                stats = gpt_stats[key]
+                print(
+                    f"{stats['challenger']} vs {stats['baseline']}: "
+                    f"win_rate={stats['win_rate']:.4f}  tie_rate={stats['tie_rate']:.4f}  n={stats['n']}"
+                )
+
     return results
 
 
@@ -321,18 +614,27 @@ def main():
     parser.add_argument("--mmlu-limit", type=int, default=None)
     parser.add_argument("--rouge-limit", type=int, default=256)
     parser.add_argument("--rm-win-rate-limit", type=int, default=256)
+    parser.add_argument("--gpt-judge", action="store_true", help="GPT judge: ppo vs base, sft, and human label")
+    parser.add_argument("--gpt-judge-only", action="store_true", help="skip other evals; run only --gpt-judge")
+    parser.add_argument("--gpt-judge-limit", type=int, default=None, help="prompts per comparison (default: GPT_JUDGE_LIMIT in config)")
     args = parser.parse_args()
+
+    if (args.gpt_judge or args.gpt_judge_only) and args.ppo_checkpoint is None:
+        parser.error("--gpt-judge requires --ppo-checkpoint")
 
     run_eval(
         base=args.base,
         sft_checkpoint=args.sft_checkpoint,
         ppo_checkpoint=args.ppo_checkpoint,
         rouge_split=args.rouge_split,
+        gpt_judge=args.gpt_judge or args.gpt_judge_only,
+        gpt_judge_only=args.gpt_judge_only,
         limits={
             "hellaswag": args.hellaswag_limit,
             "mmlu": args.mmlu_limit,
             "rouge": args.rouge_limit,
             "rm_win_rate": args.rm_win_rate_limit,
+            "gpt_judge": args.gpt_judge_limit,
         },
     )
 

@@ -58,7 +58,8 @@ def train_step(model, optimizer, input_ids_mb, attention_mask_mb, actions_mb, ga
     r = (log_prob_new - log_prob_old_mb).exp()
     L_clip = torch.min(r * gae_mb, torch.clamp(r, 1.0 - clip_eps, 1.0 + clip_eps) * gae_mb)
     L_val = (values - values_target_mb) ** 2
-    loss = -L_clip.mean() + c1 * L_val.mean() + pretrain_gamma * model.pretrain_mix_loss(pretrain_input_ids, pretrain_attention_mask)
+    loss = -L_clip.mean() + c1 * L_val.mean()
+    loss = loss + pretrain_gamma * model.pretrain_mix_loss(pretrain_input_ids, pretrain_attention_mask)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
